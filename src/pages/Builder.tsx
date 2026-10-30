@@ -8,6 +8,7 @@ import { SAMPLES } from '../builder/samples';
 import { designChecks, solve } from '../builder/solve';
 import { downloadProblem, loadCurrentId, loadProblems, readProblemFile, saveCurrentId, saveProblems } from '../builder/storage';
 import { MARGIN, MapView, type Overlays, type Tool } from '../builder/ui/MapView';
+import { RadialMenu, type RadialAction } from '../builder/ui/RadialMenu';
 import { Checks, ElementList, Inspector, Palette, ProblemPanel, Section } from '../builder/ui/panels';
 import { applyScenario, emptyScenario, SolvePanel, VentPanel, type Scenario } from '../builder/ui/solvePanels';
 import { airflow, ventFindings } from '../builder/vent';
@@ -52,6 +53,8 @@ export default function Builder() {
   const [tab, setTab] = useState<Tab>('build');
   const [tool, setTool] = useState<Tool>({ type: 'select' });
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  /** Element whose placement options ring is open on the map. */
+  const [radialId, setRadialId] = useState<string | null>(null);
   const [zoom, setZoom] = useState(3);
   const [showLabels, setShowLabels] = useState(true);
   const [showExtents, setShowExtents] = useState(true);
@@ -149,6 +152,7 @@ export default function Builder() {
     const copy = { ...el, id: newId(), x: s?.x ?? el.x, y: s?.y ?? el.y };
     update((p) => ({ ...p, elements: [...p.elements, copy] }));
     setSelectedId(copy.id);
+    return copy;
   };
 
   const place = (x: number, y: number, keep: boolean) => {
@@ -162,6 +166,7 @@ export default function Builder() {
     if (el.kind === 'gas') el.text = '';
     update((p) => ({ ...p, elements: [...p.elements, el] }));
     setSelectedId(el.id);
+    setRadialId(el.id);
     if (!keep) setTool({ type: 'select' });
   };
   const shiftDown = useRef(false);
@@ -195,6 +200,10 @@ export default function Builder() {
         return;
       }
       if (e.key === 'Escape') {
+        if (radialId) {
+          setRadialId(null);
+          return;
+        }
         setTool({ type: 'select' });
         setSelectedId(null);
         return;
@@ -223,6 +232,34 @@ export default function Builder() {
       window.removeEventListener('keyup', onUp);
     };
   });
+
+  // ------------------------------------------------------------ placement options ring
+
+  const radialEl = tab === 'build' && radialId && radialId === selectedId ? selected : null;
+  const radialAction = (a: RadialAction) => {
+    if (!selected) return;
+    if (a === 'delete') deleteEl(selected.id);
+    else if (a === 'duplicate') setRadialId(duplicateEl(selected).id);
+    else {
+      setRadialId(null);
+      // Edit: jump to the first field in the inspector (gas readings, placard wording, …).
+      if (a === 'edit')
+        setTimeout(() => {
+          const insp = document.querySelector('.inspector');
+          const f = insp?.querySelector<HTMLElement>(selected.kind === 'gas' ? 'input[type=number]' : 'textarea, input, select');
+          insp?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          f?.focus();
+        }, 0);
+    }
+  };
+  const stage = (() => {
+    const g = makeGeo(problem.layout);
+    const vbW = g.width + MARGIN.l + MARGIN.r;
+    const vbH = g.height + MARGIN.t + MARGIN.b;
+    const w = Math.round(vbW * zoom);
+    const h = Math.round(vbH * zoom);
+    return { w, h, px: (x: number) => ((x + MARGIN.l) * w) / vbW, py: (y: number) => ((g.height - y + MARGIN.t) * h) / vbH };
+  })();
 
   // ------------------------------------------------------------ analysis
 
@@ -513,21 +550,33 @@ export default function Builder() {
             </p>
           )}
           <div className="map-scroll" ref={scroller}>
-            <MapView
-              problem={problem}
-              zoom={zoom}
-              selectedId={selectedId}
-              tool={mapTool}
-              showLabels={showLabels}
-              overlays={overlays}
-              editable={tab === 'build'}
-              onSelect={setSelectedId}
-              onMove={(id, x, y) => patchEl(id, { x, y })}
-              onPlace={(x, y) => place(x, y, shiftDown.current)}
-              onCell={cycleCell}
-              onElementClick={ventToggle}
-              onOpeningClick={ventBuild}
-            />
+            <div className="map-stage" style={{ width: stage.w, height: stage.h }}>
+              <MapView
+                problem={problem}
+                zoom={zoom}
+                selectedId={selectedId}
+                tool={mapTool}
+                showLabels={showLabels}
+                overlays={overlays}
+                editable={tab === 'build'}
+                onSelect={(id) => {
+                  setSelectedId(id);
+                  if (id !== radialId) setRadialId(null);
+                }}
+                onElementTap={setRadialId}
+                onMove={(id, x, y) => {
+                  patchEl(id, { x, y });
+                  setRadialId(null);
+                }}
+                onPlace={(x, y) => place(x, y, shiftDown.current)}
+                onCell={cycleCell}
+                onElementClick={ventToggle}
+                onOpeningClick={ventBuild}
+              />
+              {radialEl && (
+                <RadialMenu el={radialEl} x={stage.px(radialEl.x)} y={stage.py(radialEl.y)} width={stage.w} height={stage.h} onPatch={(patch) => patchEl(radialEl.id, patch)} onAction={radialAction} />
+              )}
+            </div>
           </div>
         </div>
         <aside className="b-right">

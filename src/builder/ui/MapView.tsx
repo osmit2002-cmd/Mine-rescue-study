@@ -37,6 +37,8 @@ interface Props {
   editable?: boolean;
   onSelect?: (id: string | null) => void;
   onMove?: (id: string, x: number, y: number) => void;
+  /** An element was tapped or clicked without being dragged. */
+  onElementTap?: (id: string) => void;
   onPlace?: (x: number, y: number) => void;
   onCell?: (cx: number, cy: number) => void;
   onElementClick?: (id: string) => void;
@@ -57,6 +59,35 @@ function spanRect(t: Topo, eid: string, s0: number, s1: number, W: number) {
   const y1 = e.ay + (e.by - e.ay) * f1;
   if (e.vertical) return { x: e.ax - W / 2, y: Math.min(y0, y1), w: W, h: Math.abs(y1 - y0) };
   return { x: Math.min(x0, x1), y: e.ay - W / 2, w: Math.abs(x1 - x0), h: W };
+}
+
+export interface HazardRect {
+  /** Unique per rectangle, so React never reuses or keeps a stale one. */
+  key: string;
+  color: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** The hatched rectangles that draw every contaminant and explosive extent (feet, y up). */
+export function hazardRects(hazards: Hazard[], t: Topo, W: number): HazardRect[] {
+  const out: HazardRect[] = [];
+  hazards.forEach((h, hi) => {
+    if (!h.cls.contaminant && !h.cls.explosive) return;
+    const color = HZ_COLOR(h);
+    for (const [eid, spans] of h.extent.edges)
+      spans.forEach(([s0, s1], i) => {
+        const r = spanRect(t, eid, s0, s1, W);
+        out.push({ key: `h${hi}:${h.el.id}:${eid}:${i}`, color, x: r.x, y: r.y, w: Math.max(r.w, 0.5), h: Math.max(r.h, 0.5) });
+      });
+    for (const s of h.extent.nodes) {
+      const n = t.nodes.get(s.split('#')[0]);
+      if (n) out.push({ key: `hn${hi}:${h.el.id}:${s}`, color, x: n.x - W / 2, y: n.y - W / 2, w: W, h: W });
+    }
+  });
+  return out;
 }
 
 export function MapView(props: Props) {
@@ -111,6 +142,7 @@ export function MapView(props: Props) {
   };
   const onUp = () => {
     if (drag?.moved) props.onMove?.(drag.id, drag.x, drag.y);
+    else if (drag) props.onElementTap?.(drag.id);
     setDrag(null);
   };
   const onBgClick = (e: React.MouseEvent) => {
@@ -249,23 +281,11 @@ export function MapView(props: Props) {
           if (!n || n.end) return null;
           return <rect key={`xn${id}`} x={n.x - W / 2} y={Y(n.y + W / 2)} width={W} height={W} fill="#16a34a" opacity={0.13} pointerEvents="none" />;
         })}
-      {/* Smoke and gas extents */}
+      {/* Smoke and gas extents: redrawn from the full list on every change, so no stale area is left behind. */}
       {!print &&
-        overlays.hazards?.map((h) => {
-          if (!h.cls.contaminant && !h.cls.explosive) return null;
-          const c = HZ_COLOR(h);
-          const out = [];
-          for (const [eid, spans] of h.extent.edges)
-            for (const [s0, s1] of spans) {
-              const r = spanRect(topo, eid, s0, s1, W);
-              out.push(<rect key={`h${h.el.id}${eid}${s0}`} x={r.x} y={Y(r.y + r.h)} width={Math.max(r.w, 0.5)} height={Math.max(r.h, 0.5)} fill={`url(#hatch-${c.slice(1)})`} opacity={0.55} pointerEvents="none" />);
-            }
-          for (const s of h.extent.nodes) {
-            const n = topo.nodes.get(s.split('#')[0]);
-            if (n) out.push(<rect key={`hn${h.el.id}${s}`} x={n.x - W / 2} y={Y(n.y + W / 2)} width={W} height={W} fill={`url(#hatch-${c.slice(1)})`} opacity={0.55} pointerEvents="none" />);
-          }
-          return <g key={`hz${h.el.id}`}>{out}</g>;
-        })}
+        hazardRects(overlays.hazards ?? [], topo, W).map((r) => (
+          <rect key={r.key} x={r.x} y={Y(r.y + r.h)} width={r.w} height={r.h} fill={`url(#hatch-${r.color.slice(1)})`} opacity={0.55} pointerEvents="none" />
+        ))}
       {/* Rib lines */}
       <g stroke="#111" strokeWidth={0.7} strokeLinecap="square" pointerEvents="none">
         {lines.map((l, i) => (

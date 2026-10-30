@@ -398,3 +398,15 @@ button.danger { color: var(--bad); }
   .print-text { white-space: pre-wrap; }
   .print-key { break-before: page; }
 }
+/* Placement options ring around a newly placed (or tapped) map element */
+.map-stage { position: relative; }
+.radial { position: absolute; width: 0; height: 0; z-index: 5; }
+.radial-ring { position: absolute; pointer-events: none; overflow: visible; }
+.radial-ring circle { fill: rgba(255, 255, 255, 0.55); stroke: #a8780f; stroke-width: 1; stroke-dasharray: 4 3; }
+.radial-btn { position: absolute; transform: translate(-50%, -50%); min-height: 34px; min-width: 40px; padding: 0.2rem 0.6rem; border-radius: 999px; font-size: 0.82rem; white-space: nowrap; justify-content: center; background: var(--card); color: var(--fg); border: 1px solid var(--border); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18); animation: radial-in 0.14s ease-out both; }
+.radial-btn:hover { border-color: var(--accent); }
+.radial-btn.on { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.radial-btn.danger { color: var(--bad); border-color: var(--bad); }
+.radial-btn.done { font-weight: 700; }
+@keyframes radial-in { from { opacity: 0; transform: translate(-50%, -50%) scale(0.6); } }
+@media (prefers-reduced-motion: reduce) { .radial-btn { animation: none; } }
