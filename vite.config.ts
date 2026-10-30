@@ -3,10 +3,21 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 import { readFileSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 
 // Full-page images (content/pages/, written by copy-content when cropped figures exist) are not precached:
 // the service worker caches them when first viewed. Cropped figures and everything else are precached.
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string };
+// Which commit (and branch) this copy was built from, so two pull requests with the same version can be told apart.
+function gitCommit(): string {
+  try {
+    const sha = execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+    const branch = execSync('git rev-parse --abbrev-ref HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+    return branch && branch !== 'HEAD' && branch !== 'main' ? `${sha} (${branch})` : sha;
+  } catch {
+    return '';
+  }
+}
 
 // base './' keeps the build portable: it works at a domain root or in a sub-folder
 // (GitHub Pages, a USB stick served by any static server, etc.). Routing is hash-based.
@@ -14,6 +25,7 @@ export default defineConfig({
   base: './',
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
+    __APP_COMMIT__: JSON.stringify(gitCommit()),
     __APP_BUILD__: JSON.stringify(new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC')
   },
   plugins: [

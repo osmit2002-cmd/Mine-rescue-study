@@ -6,6 +6,8 @@
 //  - rules-*.json (other events) and parts.json: copied when present and valid (real content only).
 //  - figures/**: downscaled to max 1400 px wide and re-encoded as WebP q75 with sharp (falls back to a
 //    plain copy if sharp is unavailable). build-info.json maps original paths to the built files.
+//    Converted files are cached per user (~/.cache/mine-rescue-study/figures, or FIGURE_CACHE_DIR); with --dev
+//    (npm run dev) nothing is converted and uncached figures are copied unchanged.
 //  - figures.json (cropped-figure index): copied when present and valid. Every cropped figure (figures.json and
 //    the `figures` lists on rule items and sections) is checked: file exists, rule/section ids resolve, no
 //    duplicate ids. Problems are warned about here and reported (and skipped) in the app.
@@ -14,10 +16,11 @@
 //    content/pages/ and cached by the service worker when first viewed ("Download all for offline" on the
 //    Figures page fetches them all). Without cropped figures every image is precached, as before.
 //  - sources.md: copied for the About page.
-import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, statSync, rmSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, statSync, rmSync, readdirSync, renameSync } from 'node:fs';
 import { dirname, join, resolve, relative, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { availableParallelism, homedir } from 'node:os';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appDir = resolve(here, '..');
@@ -30,6 +33,8 @@ const FIG_QUALITY = 75;
 // full page is one tap away at FIG_MAX_WIDTH). Override with CROP_MAX_WIDTH / CROP_QUALITY.
 const CROP_MAX_WIDTH = Number(process.env.CROP_MAX_WIDTH ?? 1000);
 const CROP_QUALITY = Number(process.env.CROP_QUALITY ?? 70);
+// --dev: never convert figures (see the figures step below).
+const DEV = process.argv.includes('--dev');
 
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });
@@ -146,26 +151,57 @@ if (info.rules.used === 'real' && existsSync(figDir)) {
   }
   const walk = (d) => readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(d, e.name)) : [join(d, e.name)]));
   const images = walk(figDir).filter((p) => /\.(png|jpe?g|webp)$/i.test(p));
-  for (const src of images) {
+  // Converting every figure to WebP takes a minute or more, so converted files are kept in a per-user cache
+  // (shared by every checkout and branch) keyed by the source bytes and settings; only new or changed figures
+  // are converted, in parallel. With --dev (npm run dev) nothing is converted: figures already in the cache
+  // are used and the rest are copied unchanged, so the dev server starts at once.
+  const cacheDir = resolve(process.env.FIGURE_CACHE_DIR ?? join(homedir(), '.cache', 'mine-rescue-study', 'figures'));
+  const convert = !!sharp && !DEV;
+  if (convert) mkdirSync(cacheDir, { recursive: true });
+  const jobs = images.map((src) => {
     const rel = relative(contentDir, src).split('\\').join('/');
     const crop = cropFiles.has(rel);
+    const bytes = readFileSync(src);
+    const settings = crop ? `crop/${CROP_MAX_WIDTH}/${CROP_QUALITY}/6` : `page/${FIG_MAX_WIDTH}/${FIG_QUALITY}`;
+    const cached = join(cacheDir, createHash('sha256').update(bytes).update(settings).digest('hex') + '.webp');
+    return { src, rel, crop, bytes, cached, hit: existsSync(cached) };
+  });
+  const todo = convert ? jobs.filter((j) => !j.hit) : [];
+  if (todo.length) {
+    const workers = Math.max(1, Math.min(availableParallelism(), 8));
+    console.log(`[copy-content] figures: converting ${todo.length} of ${images.length} image(s) to WebP on ${workers} thread(s); this happens once per machine...`);
+    let done = 0;
+    const queue = [...todo];
+    await Promise.all(
+      Array.from({ length: workers }, async () => {
+        for (let j = queue.shift(); j; j = queue.shift()) {
+          const tmp = `${j.cached}.${process.pid}.${randomUUID()}.tmp`;
+          await sharp(j.bytes)
+            .resize({ width: j.crop ? CROP_MAX_WIDTH : FIG_MAX_WIDTH, withoutEnlargement: true })
+            .webp(j.crop ? { quality: CROP_QUALITY, effort: 6 } : { quality: FIG_QUALITY })
+            .toFile(tmp);
+          renameSync(tmp, j.cached);
+          j.hit = true;
+          if (++done % 25 === 0 || done === todo.length) console.log(`[copy-content]   converted ${done}/${todo.length}`);
+        }
+      })
+    );
+  }
+  let webpCount = 0;
+  for (const { src, rel, crop, bytes, cached, hit } of jobs) {
     const page = cropFiles.size > 0 && !crop;
-    const before = statSync(src).size;
+    const before = bytes.length;
     let outRel = page ? `pages/${rel.slice('figures/'.length)}` : rel;
-    if (sharp) outRel = outRel.slice(0, -extname(outRel).length) + '.webp';
+    if (hit) outRel = outRel.slice(0, -extname(outRel).length) + '.webp';
     // Full pages are cached at runtime (CacheFirst, not revisioned by the precache manifest), so their names
     // carry a content hash: a changed page gets a new URL instead of being served stale from the cache.
     if (page) {
-      const h = createHash('sha256').update(readFileSync(src)).update(sharp ? `${FIG_MAX_WIDTH}/${FIG_QUALITY}` : 'orig').digest('hex').slice(0, 8);
+      const h = createHash('sha256').update(bytes).update(hit ? `${FIG_MAX_WIDTH}/${FIG_QUALITY}` : 'orig').digest('hex').slice(0, 8);
       outRel = outRel.slice(0, -extname(outRel).length) + `.${h}` + extname(outRel);
     }
     mkdirSync(dirname(join(outDir, outRel)), { recursive: true });
-    if (sharp)
-      await sharp(src)
-        .resize({ width: crop ? CROP_MAX_WIDTH : FIG_MAX_WIDTH, withoutEnlargement: true })
-        .webp(crop ? { quality: CROP_QUALITY, effort: 6 } : { quality: FIG_QUALITY })
-        .toFile(join(outDir, outRel));
-    else copyFileSync(src, join(outDir, outRel));
+    copyFileSync(hit ? cached : src, join(outDir, outRel));
+    if (hit) webpCount++;
     const after = statSync(join(outDir, outRel)).size;
     info.figures.count++;
     info.figures.originalBytes += before;
@@ -177,9 +213,9 @@ if (info.rules.used === 'real' && existsSync(figDir)) {
     if (page) info.figures.runtime.push(outRel);
     info.figures.map[rel] = outRel;
   }
-  info.figures.format = sharp ? 'webp' : 'original';
+  info.figures.format = webpCount === jobs.length && jobs.length ? 'webp' : webpCount ? 'mixed' : 'original';
   const mb = (n) => (n / 1048576).toFixed(1);
-  console.log(`[copy-content] figures: ${info.figures.count} image(s), ${mb(info.figures.originalBytes)} MB -> ${mb(info.figures.builtBytes)} MB (${info.figures.format})`);
+  console.log(`[copy-content] figures: ${info.figures.count} image(s), ${mb(info.figures.originalBytes)} MB -> ${mb(info.figures.builtBytes)} MB (${info.figures.format}${DEV && webpCount < jobs.length ? `; dev: ${jobs.length - webpCount} copied unconverted, npm run build converts them` : ''})`);
   if (cropFiles.size)
     console.log(`[copy-content]   ${info.figures.crops} cropped figures, ${mb(info.figures.cropBytes)} MB precached; ${info.figures.runtime.length} full pages, ${mb(info.figures.builtBytes - info.figures.cropBytes)} MB cached on first view`);
 }
@@ -223,3 +259,4 @@ info.sources = info.rules.used === 'real' && existsSync(sources);
 if (info.sources) copyFileSync(sources, join(outDir, 'sources.md'));
 
 writeFileSync(join(outDir, 'build-info.json'), JSON.stringify(info, null, 2));
+console.log('[copy-content] done');

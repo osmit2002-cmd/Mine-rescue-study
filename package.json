@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "copy-content": "node scripts/copy-content.mjs",
-    "predev": "npm run copy-content",
+    "predev": "node scripts/copy-content.mjs --dev",
     "dev": "vite",
     "prebuild": "npm run copy-content",
     "build": "tsc -b && vite build",

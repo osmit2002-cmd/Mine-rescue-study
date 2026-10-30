@@ -103,6 +103,8 @@ npm run preview    # serve dist/ on :4173 to check the service worker
 node scripts/offline-check.mjs   # headless end-to-end + offline check (needs preview running + Chrome)
 ```
 
+`npm run dev` starts in a few seconds: it does not convert the rule-book figures and serves the originals (or WebP files already converted on this machine). `npm run build` converts them to WebP using all CPU cores, once per machine: converted files are cached in `~/.cache/mine-rescue-study/figures` (set `FIGURE_CACHE_DIR` to move it) and shared by every checkout and branch. The footer and About page show the commit the app was built from, so two pull requests with the same version number can be told apart.
+
 To try the solver: `npm run dev`, open `http://localhost:5173/#/builder`, pick a problem (or **Samples → 2016 Post 5 & WV State — Day 1**) and open the **Solve** tab. `npx vitest run src/builder` runs just the builder, solver, ventilation planner and judge-key tests; a failing judge-key test prints the full comparison with the judges.
 
 ## Deploy

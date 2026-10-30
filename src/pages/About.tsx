@@ -40,6 +40,12 @@ export default function About() {
       <dl className="meta">
         <dt>App version</dt>
         <dd>v{__APP_VERSION__}</dd>
+        {__APP_COMMIT__ && (
+          <>
+            <dt>Commit</dt>
+            <dd>{__APP_COMMIT__}</dd>
+          </>
+        )}
         <dt>Edition</dt>
         <dd>{edition ?? (sample.rules ? 'SAMPLE placeholder data' : document.edition ?? 'unknown')}</dd>
         {document.title && (<><dt>Rule book</dt><dd>{document.url && /^https?:/i.test(document.url) ? <a href={document.url} target="_blank" rel="noreferrer noopener">{document.title}</a> : document.title}</dd></>)}
