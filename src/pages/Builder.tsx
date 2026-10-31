@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { KIND_DEFS, makeElement, type PaletteItem } from '../builder/catalog';
 import { hazards } from '../builder/extents';
-import { buildTopo, cellKey, cellType, makeGeo, snap } from '../builder/geometry';
+import { buildTopo, cellRect, makeGeo, snap } from '../builder/geometry';
+import { editLayout, openingName, openingState, type LayoutOp } from '../builder/layoutEdit';
 import { makeBoard } from '../builder/graph';
-import { blankProblem, newId, type El, type Layout, type Problem, type SegState } from '../builder/model';
+import { blankProblem, newId, sideDepth, type El, type Problem } from '../builder/model';
+import { BUILT_IN, loadNumbering, normalizeNumbering, saveNumbering, type PillarNumbering } from '../builder/pillars';
 import { SAMPLES } from '../builder/samples';
 import { designChecks, solve } from '../builder/solve';
 import { downloadProblem, loadCurrentId, loadProblems, readProblemFile, saveCurrentId, saveProblems } from '../builder/storage';
-import { MARGIN, MapView, type Overlays, type Tool } from '../builder/ui/MapView';
-import { Checks, ElementList, Inspector, Palette, ProblemPanel, Section } from '../builder/ui/panels';
+import { mapMargins, MapView, type Overlays, type Tool } from '../builder/ui/MapView';
+import { OpeningRing, RadialMenu, type RadialAction } from '../builder/ui/RadialMenu';
+import { Checks, ElementList, Inspector, LayoutBar, NumberingPanel, Palette, ProblemPanel, Section, type LayoutBarOp } from '../builder/ui/panels';
 import { applyScenario, emptyScenario, SolvePanel, VentPanel, type Scenario } from '../builder/ui/solvePanels';
 import { airflow, ventFindings } from '../builder/vent';
 
@@ -29,20 +32,6 @@ function initialProblems(): { list: Problem[]; current: string } {
   return { list, current };
 }
 
-/** Keep cell overrides attached to the same openings when entries or rows are added or removed. */
-function remapCells(old: Layout, next: Layout): Record<string, SegState> {
-  const out: Record<string, SegState> = {};
-  for (const [k, v] of Object.entries(old.cells)) {
-    let [cx, cy] = k.split(',').map(Number);
-    if (cx === 2 * old.entries) cx = 2 * next.entries;
-    else if (cx > 2 * next.entries - 1) continue;
-    if (cy === 2 * old.rows - 1) cy = 2 * next.rows - 1;
-    else if (cy > 2 * next.rows - 2) continue;
-    out[cellKey(cx, cy)] = v;
-  }
-  return out;
-}
-
 export default function Builder() {
   const init = useMemo(initialProblems, []);
   const [problems, setProblems] = useState<Problem[]>(init.list);
@@ -52,6 +41,8 @@ export default function Builder() {
   const [tab, setTab] = useState<Tab>('build');
   const [tool, setTool] = useState<Tool>({ type: 'select' });
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  /** Element whose placement options ring is open on the map. */
+  const [radialId, setRadialId] = useState<string | null>(null);
   const [zoom, setZoom] = useState(3);
   const [showLabels, setShowLabels] = useState(true);
   const [showExtents, setShowExtents] = useState(true);
@@ -63,6 +54,15 @@ export default function Builder() {
   const [saveOk, setSaveOk] = useState(true);
   const scroller = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const numberingInput = useRef<HTMLInputElement>(null);
+  /** Opening whose layout ring is open (layout tool). */
+  const [activeCell, setActiveCell] = useState<{ cx: number; cy: number } | null>(null);
+  const [numbering, setNumberingState] = useState<PillarNumbering>(() => loadNumbering());
+  const numberingIsDefault = JSON.stringify(numbering) === JSON.stringify(BUILT_IN);
+  const setNumbering = (n: PillarNumbering | null) => {
+    setNumberingState(n ?? BUILT_IN);
+    saveNumbering(n && JSON.stringify(n) !== JSON.stringify(BUILT_IN) ? n : null);
+  };
 
   const problem = problems.find((p) => p.id === currentId) ?? problems[0];
   const topo = useMemo(() => buildTopo(makeGeo(problem.layout)), [problem.layout]);
@@ -80,8 +80,9 @@ export default function Builder() {
     const el = scroller.current;
     if (!el) return;
     const g = makeGeo(problem.layout);
-    const vbW = g.width + MARGIN.l + MARGIN.r;
-    const vbH = g.height + MARGIN.t + MARGIN.b;
+    const M = mapMargins(problem.layout);
+    const vbW = g.width + M.l + M.r;
+    const vbH = g.height + M.t + M.b;
     const z = Math.min((el.clientWidth - 4) / vbW, Math.max(320, el.clientHeight - 4) / vbH);
     setZoom(Math.max(0.8, Math.min(12, z)));
   }, [problem.layout]);
@@ -149,6 +150,7 @@ export default function Builder() {
     const copy = { ...el, id: newId(), x: s?.x ?? el.x, y: s?.y ?? el.y };
     update((p) => ({ ...p, elements: [...p.elements, copy] }));
     setSelectedId(copy.id);
+    return copy;
   };
 
   const place = (x: number, y: number, keep: boolean) => {
@@ -162,20 +164,56 @@ export default function Builder() {
     if (el.kind === 'gas') el.text = '';
     update((p) => ({ ...p, elements: [...p.elements, el] }));
     setSelectedId(el.id);
+    setRadialId(el.id);
     if (!keep) setTool({ type: 'select' });
   };
   const shiftDown = useRef(false);
 
-  const cycleCell = (cx: number, cy: number) => {
-    const g = makeGeo(problem.layout);
-    const ty = cellType(g, cx, cy);
-    if (ty === 'pillar' || ty === 'int') return;
-    const cur = problem.layout.cells[cellKey(cx, cy)] ?? (ty === 'side' ? (cy === 0 ? 'open' : 'solid') : 'open');
-    const next: SegState = cur === 'open' ? 'projected' : cur === 'projected' ? 'solid' : 'open';
-    update((p) => ({ ...p, layout: { ...p.layout, cells: { ...p.layout.cells, [cellKey(cx, cy)]: next } } }));
-  };
+  // ------------------------------------------------------------ layout editing
 
-  const setLayout = (l: Layout) => update((p) => ({ ...p, layout: { ...l, cells: l.entries !== p.layout.entries || l.rows !== p.layout.rows ? remapCells(p.layout, l) : l.cells } }));
+  const layoutOp = (op: LayoutOp) => {
+    const r = editLayout(problem, op);
+    if (r.refused) return flash(r.refused);
+    if (r.lost.length) {
+      const names = [...new Set(r.lost.map((e) => KIND_DEFS[e.kind].name.toLowerCase()))].join(', ');
+      if (!window.confirm(`This removes ${r.lost.length} placed item${r.lost.length > 1 ? 's' : ''} (${names}) in the part of the map being taken away. Continue?`)) return;
+    }
+    update(() => r.problem);
+    if (r.lost.some((e) => e.id === selectedId)) setSelectedId(null);
+    setActiveCell(null);
+  };
+  const setLayoutTool = (on: boolean) => {
+    setTool(on ? { type: 'layout' } : { type: 'select' });
+    setActiveCell(null);
+    if (on) {
+      setSelectedId(null);
+      setRadialId(null);
+    }
+  };
+  const onLayoutBar = (op: LayoutBarOp) => (op.type === 'done' ? setLayoutTool(false) : layoutOp(op));
+
+  const importNumbering = async (f: File | undefined) => {
+    if (!f) return;
+    try {
+      if (f.size > 100_000) throw new Error('That file is too large to be a pillar numbering file.');
+      const n = normalizeNumbering(JSON.parse(await f.text()));
+      setNumbering(n);
+      flash(`Pillar numbering: ${n.name}.`);
+    } catch (e) {
+      flash(e instanceof SyntaxError ? 'That file is not JSON.' : (e as Error).message);
+    }
+  };
+  const exportNumbering = () => {
+    const blob = new Blob([JSON.stringify(numbering, null, 2) + '\n'], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'pillar-numbering.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
 
   // Keyboard shortcuts on the map.
   useEffect(() => {
@@ -195,6 +233,14 @@ export default function Builder() {
         return;
       }
       if (e.key === 'Escape') {
+        if (activeCell) {
+          setActiveCell(null);
+          return;
+        }
+        if (radialId) {
+          setRadialId(null);
+          return;
+        }
         setTool({ type: 'select' });
         setSelectedId(null);
         return;
@@ -223,6 +269,35 @@ export default function Builder() {
       window.removeEventListener('keyup', onUp);
     };
   });
+
+  // ------------------------------------------------------------ placement options ring
+
+  const radialEl = tab === 'build' && radialId && radialId === selectedId ? selected : null;
+  const radialAction = (a: RadialAction) => {
+    if (!selected) return;
+    if (a === 'delete') deleteEl(selected.id);
+    else if (a === 'duplicate') setRadialId(duplicateEl(selected).id);
+    else {
+      setRadialId(null);
+      // Edit: jump to the first field in the inspector (gas readings, placard wording, …).
+      if (a === 'edit')
+        setTimeout(() => {
+          const insp = document.querySelector('.inspector');
+          const f = insp?.querySelector<HTMLElement>(selected.kind === 'gas' ? 'input[type=number]' : 'textarea, input, select');
+          insp?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          f?.focus();
+        }, 0);
+    }
+  };
+  const stage = (() => {
+    const g = makeGeo(problem.layout);
+    const M = mapMargins(problem.layout);
+    const vbW = g.width + M.l + M.r;
+    const vbH = g.height + M.t + M.b;
+    const w = Math.round(vbW * zoom);
+    const h = Math.round(vbH * zoom);
+    return { w, h, px: (x: number) => ((x + M.l) * w) / vbW, py: (y: number) => ((g.height - y + M.t) * h) / vbH };
+  })();
 
   // ------------------------------------------------------------ analysis
 
@@ -475,6 +550,9 @@ export default function Builder() {
           </label>
           {tab === 'build' && (
             <>
+              <button type="button" className={tool.type === 'layout' ? 'primary' : ''} onClick={() => setLayoutTool(tool.type !== 'layout')} aria-pressed={tool.type === 'layout'} title="Add or remove entries and crosscuts, change sizes, set openings mined or not">
+                Edit layout
+              </button>
               <button type="button" onClick={undo} disabled={!past.length} aria-label="Undo" title="Undo (Ctrl+Z)">
                 ↶
               </button>
@@ -506,28 +584,72 @@ export default function Builder() {
               Click the map to place: <strong>{tool.name}</strong>. Shift-click to place several · Esc to stop.
             </p>
           )}
-          {tool.type === 'layout' && <p className="tool-hint" role="status">Click openings to change them. Esc when done.</p>}
+          {tool.type === 'layout' && tab === 'build' && (
+            <>
+              <LayoutBar l={problem.layout} onOp={onLayoutBar} />
+              <p className="tool-hint" role="status">
+                Click an entry, crosscut or stub to set it mined, projected or not mined. Drag the handle at either end of a crosscut outward to pull a side room out (all rooms on a side share one depth), or back to the entry to close it. Placed items stay in their openings when the layout changes.
+              </p>
+            </>
+          )}
           {message && (
             <p className="tool-hint warn" role="alert">
               {message}
             </p>
           )}
           <div className="map-scroll" ref={scroller}>
-            <MapView
-              problem={problem}
-              zoom={zoom}
-              selectedId={selectedId}
-              tool={mapTool}
-              showLabels={showLabels}
-              overlays={overlays}
-              editable={tab === 'build'}
-              onSelect={setSelectedId}
-              onMove={(id, x, y) => patchEl(id, { x, y })}
-              onPlace={(x, y) => place(x, y, shiftDown.current)}
-              onCell={cycleCell}
-              onElementClick={ventToggle}
-              onOpeningClick={ventBuild}
-            />
+            <div className="map-stage" style={{ width: stage.w, height: stage.h }}>
+              <MapView
+                problem={problem}
+                zoom={zoom}
+                selectedId={selectedId}
+                tool={mapTool}
+                numbering={numbering}
+                activeCell={activeCell && tool.type === 'layout' ? `${activeCell.cx},${activeCell.cy}` : null}
+                showLabels={showLabels}
+                overlays={overlays}
+                editable={tab === 'build'}
+                onSelect={(id) => {
+                  setSelectedId(id);
+                  if (id !== radialId) setRadialId(null);
+                }}
+                onElementTap={setRadialId}
+                onMove={(id, x, y) => {
+                  patchEl(id, { x, y });
+                  setRadialId(null);
+                }}
+                onPlace={(x, y) => place(x, y, shiftDown.current)}
+                onCell={(cx, cy) => setActiveCell({ cx, cy })}
+                onRoom={(side, row, depth) => {
+                  const l = problem.layout;
+                  const open = openingState(l, side === 'left' ? 0 : 2 * l.entries, 2 * row) !== 'solid' && sideDepth(l, side) > 0;
+                  // A tap toggles the room (opening it at the side's depth, or the face stub depth if that side has none).
+                  const d = depth ?? (open ? 0 : sideDepth(l, side) || l.stubLength);
+                  layoutOp({ type: 'room', side, row, depth: d });
+                }}
+                onElementClick={ventToggle}
+                onOpeningClick={ventBuild}
+              />
+              {activeCell && tool.type === 'layout' && tab === 'build' && (() => {
+                const g = makeGeo(problem.layout);
+                if (activeCell.cx > 2 * g.E || activeCell.cy > 2 * g.R - 1) return null;
+                const rc = cellRect(g, activeCell.cx, activeCell.cy);
+                return (
+                  <OpeningRing
+                    name={openingName(problem.layout, activeCell.cx, activeCell.cy)}
+                    state={openingState(problem.layout, activeCell.cx, activeCell.cy)}
+                    x={stage.px(rc.x + rc.w / 2)}
+                    y={stage.py(rc.y + rc.h / 2)}
+                    width={stage.w}
+                    height={stage.h}
+                    onPick={(pick) => (pick === 'done' ? setActiveCell(null) : layoutOp({ type: 'cell', cx: activeCell.cx, cy: activeCell.cy, state: pick }))}
+                  />
+                );
+              })()}
+              {radialEl && (
+                <RadialMenu el={radialEl} x={stage.px(radialEl.x)} y={stage.py(radialEl.y)} width={stage.w} height={stage.h} onPatch={(patch) => patchEl(radialEl.id, patch)} onAction={radialAction} />
+              )}
+            </div>
           </div>
         </div>
         <aside className="b-right">
@@ -536,7 +658,17 @@ export default function Builder() {
               <Inspector el={selected} topo={topo} onChange={(patch) => patchEl(selected.id, patch)} onDelete={() => deleteEl(selected.id)} onDuplicate={() => duplicateEl(selected)} onClose={() => setSelectedId(null)} />
             ) : (
               <>
-                <ProblemPanel p={problem} onChange={(patch) => update((p) => ({ ...p, ...patch }))} onLayout={setLayout} layoutTool={tool.type === 'layout'} onLayoutTool={(on) => setTool(on ? { type: 'layout' } : { type: 'select' })} />
+                <ProblemPanel
+                  p={problem}
+                  onChange={(patch) => update((p) => ({ ...p, ...patch }))}
+                  onLayout={(patch) => layoutOp({ type: 'set', patch })}
+                  layoutTool={tool.type === 'layout'}
+                  onLayoutTool={setLayoutTool}
+                  numberingPanel={
+                    <NumberingPanel n={numbering} isDefault={numberingIsDefault} onChange={setNumbering} onReset={() => setNumbering(null)} onImport={() => numberingInput.current?.click()} onExport={exportNumbering} />
+                  }
+                />
+                <input ref={numberingInput} type="file" accept=".json,application/json" hidden onChange={(e) => importNumbering(e.target.files?.[0]).finally(() => (e.target.value = ''))} />
                 <ElementList p={problem} topo={topo} selectedId={selectedId} onSelect={setSelectedId} />
                 <Section title="Design checks" count={buildChecks.length} open={buildChecks.some((c) => c.level !== 'info')}>
                   <Checks checks={buildChecks} onSelect={setSelectedId} />
@@ -577,7 +709,7 @@ export default function Builder() {
               </p>
             </>
           )}
-          <MapView problem={printMode === 'blank' && blankForPrint ? blankForPrint : problem} zoom={1} selectedId={null} tool={{ type: 'select' }} showLabels printMode={printMode} printScale={printContest ? 10 : null} />
+          <MapView problem={printMode === 'blank' && blankForPrint ? blankForPrint : problem} numbering={numbering} zoom={1} selectedId={null} tool={{ type: 'select' }} showLabels printMode={printMode} printScale={printContest ? 10 : null} />
           {printMode === 'key' && keySol && (
             <div className="print-key">
               <h3>Mapping key</h3>

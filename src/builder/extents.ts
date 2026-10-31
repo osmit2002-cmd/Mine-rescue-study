@@ -26,6 +26,20 @@ export interface Hazard {
 
 const emptyExtent = (): Extent => ({ edges: new Map(), nodes: new Set() });
 
+/** Merge overlapping or touching spans on each edge, so every stretch of an opening is covered once. */
+function normalize(x: Extent): Extent {
+  for (const [eid, spans] of x.edges) {
+    const out: [number, number][] = [];
+    for (const [a, b] of [...spans].sort((p, q) => p[0] - q[0] || p[1] - q[1])) {
+      const last = out[out.length - 1];
+      if (last && a <= last[1] + 0.01) last[1] = Math.max(last[1], b);
+      else out.push([a, b]);
+    }
+    x.edges.set(eid, out);
+  }
+  return x;
+}
+
 function addSpan(x: Extent, edge: string, s0: number, s1: number) {
   const lo = Math.min(s0, s1);
   const hi = Math.max(s0, s1);
@@ -98,7 +112,7 @@ export function gasExtent(board: Board, g: Graph, p: Placed, approach: Map<strin
     const [s0, s1] = gasWalk(board, g, p.loc.edge, p, t);
     addSpan(x, p.loc.edge, s0, s1);
   }
-  return x;
+  return normalize(x);
 }
 
 /** Smoke: flood from the placard until "end of smoke" or another smoke placard, an airtight separation, or an inaccessible condition. */
@@ -141,7 +155,7 @@ export function smokeExtent(board: Board, g: Graph, p: Placed, approach: Map<str
   };
   if (p.loc.type === 'node') {
     enterNode(subOfPlaced(g, p) ?? p.loc.node);
-    return x;
+    return normalize(x);
   }
   if (p.loc.type !== 'edge') return x;
   const side = approach.get(p.loc.edge) ?? 'both';
@@ -152,10 +166,13 @@ export function smokeExtent(board: Board, g: Graph, p: Placed, approach: Map<str
     seen.add(`e:${p.loc.edge}:${t}`);
     if (walk(p.loc.edge, p.s, t, p)) enterNode(t === 'a' ? ea : eb);
   }
-  return x;
+  return normalize(x);
 }
 
-/** Every smoke and gas placard with its class and extent. */
+/**
+ * Every smoke and gas placard with its class and extent. Always computed from scratch for the whole map, so any
+ * change (a placard or stopping added, moved or removed) redraws every extent, not just those near the change.
+ */
 export function hazards(board: Board, approach = approachSides(board)): Hazard[] {
   const g = buildGraph(board, 'air');
   const out: Hazard[] = [];

@@ -1,0 +1,20 @@
+{
+  "schema": "mrs-pillar-numbering/1",
+  "name": "0, 00 outby the FAB, then 1 to N left to right, moving inby",
+  "about": "Edit this file to change how the builder numbers pillars for every problem (rebuild the app afterwards), or change it per device in the builder: Blank map > Pillar numbers, where you can also import or export a file in this format.",
+  "show": true,
+  "outby": {
+    "labels": ["0", "00"],
+    "more": "add-zero"
+  },
+  "inby": {
+    "start": 1,
+    "step": 1,
+    "order": "rows",
+    "direction": "left-to-right",
+    "prefix": "",
+    "suffix": ""
+  },
+  "faceBlocks": true,
+  "showOnBlankMap": false
+}

@@ -5,7 +5,7 @@
  * Cell columns cx: 0 = left side stub, 2i+1 = entry i, 2i+2 = pillar column between entries i and i+1, 2E = right side stub.
  * Cell rows cy: 2r = crosscut row r (row 0 is the FAB), 2r+1 = pillar band above row r, 2R-1 = inby stub band.
  */
-import { entryName, xcName, type El, type Layout, type SegState } from './model';
+import { entryName, sideDepth, xcName, type El, type Layout, type SegState } from './model';
 
 export type CellType = 'int' | 'entry' | 'stub' | 'xc' | 'side' | 'pillar';
 
@@ -26,7 +26,7 @@ export function makeGeo(layout: Layout): Geo {
   const E = layout.entries;
   const R = layout.rows;
   const colW: number[] = [];
-  for (let cx = 0; cx <= 2 * E; cx++) colW.push(cx === 0 || cx === 2 * E ? layout.stubLength : cx % 2 === 1 ? layout.entryWidth : layout.pillarWidth);
+  for (let cx = 0; cx <= 2 * E; cx++) colW.push(cx === 0 ? sideDepth(layout, 'left') : cx === 2 * E ? sideDepth(layout, 'right') : cx % 2 === 1 ? layout.entryWidth : layout.pillarWidth);
   const rowH: number[] = [];
   for (let cy = 0; cy <= 2 * R - 1; cy++) rowH.push(cy === 2 * R - 1 ? layout.stubLength : cy % 2 === 0 ? layout.entryWidth : layout.pillarLength);
   const colX: number[] = [];
@@ -65,7 +65,7 @@ export function defaultCellState(g: Geo, cx: number, cy: number): SegState {
 export function cellState(g: Geo, cx: number, cy: number): SegState {
   if (cx < 0 || cy < 0 || cx > 2 * g.E || cy > 2 * g.R - 1) return 'solid';
   const t = cellType(g, cx, cy);
-  if (t === 'pillar') return 'solid';
+  if (t === 'pillar' || (t === 'side' && !g.colW[cx])) return 'solid';
   const o = g.layout.cells[cellKey(cx, cy)];
   if (t === 'int') {
     if (o) return o;
@@ -81,7 +81,7 @@ export function cellState(g: Geo, cx: number, cy: number): SegState {
 function cellStateRaw(g: Geo, cx: number, cy: number): SegState {
   if (cx < 0 || cy < 0 || cx > 2 * g.E || cy > 2 * g.R - 1) return 'solid';
   const t = cellType(g, cx, cy);
-  if (t === 'pillar' || t === 'int') return 'solid';
+  if (t === 'pillar' || t === 'int' || (t === 'side' && !g.colW[cx])) return 'solid';
   return g.layout.cells[cellKey(cx, cy)] ?? defaultCellState(g, cx, cy);
 }
 
