@@ -2,10 +2,15 @@ import { useMemo, useRef, useState, type PointerEvent as RPointerEvent } from 'r
 import { KIND_DEFS } from '../catalog';
 import type { Hazard } from '../extents';
 import { acrossRot, buildTopo, cellRect, cellState, cellType, makeGeo, ribLines, snap, type Geo, type Topo } from '../geometry';
-import { entryName, type El, type Problem } from '../model';
+import { entryName, type El, type Layout, type Problem } from '../model';
+import { outbyBand, pillarLabels, type PillarNumbering } from '../pillars';
+import { MIN_ROOM } from '../layoutEdit';
 import { mapLabel, SymbolShape } from './symbols';
 
 export const MARGIN = { l: 34, r: 14, t: 14, b: 30 };
+
+/** Margins around the map in feet: the bottom one also holds the drawn row of pillars outby the FAB. */
+export const mapMargins = (layout: Layout) => ({ ...MARGIN, b: MARGIN.b + outbyBand(makeGeo(layout)) });
 
 export type Tool = { type: 'select' } | { type: 'place'; kind: El['kind']; sub?: El['sub']; name: string } | { type: 'layout' } | { type: 'vent-build' } | { type: 'vent-toggle' };
 
@@ -45,6 +50,12 @@ interface Props {
   onOpeningClick?: (x: number, y: number) => void;
   /** Feet per inch when printing (10 = contest scale 1 in = 10 ft); null fits the page. */
   printScale?: number | null;
+  /** Pillar numbering scheme; numbers are drawn when it is given and its `show` is on. */
+  numbering?: PillarNumbering;
+  /** Opening highlighted in the layout tool (its options ring is open), as "cx,cy". */
+  activeCell?: string | null;
+  /** Layout tool: a side room handle was dragged out to `depth` feet (under MIN_ROOM closes it), or tapped (depth null: toggle). */
+  onRoom?: (side: 'left' | 'right', row: number, depth: number | null) => void;
 }
 
 const HZ_COLOR = (h: Hazard) => (h.cls.explosive ? '#dc2626' : h.el.kind === 'smoke' ? '#4b5563' : h.cls.irrespirable ? '#ea580c' : '#ca8a04');
@@ -98,13 +109,24 @@ export function MapView(props: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [drag, setDrag] = useState<{ id: string; dx: number; dy: number; x: number; y: number; moved: boolean } | null>(null);
   const [hoverCell, setHoverCell] = useState<string | null>(null);
+  /** Side room handle being dragged: depth in feet so far. */
+  const [roomDrag, setRoomDrag] = useState<{ side: 'left' | 'right'; row: number; depth: number; moved: boolean } | null>(null);
   const H = geo.height;
   const W = problem.layout.entryWidth;
   const k = Math.max(0.6, Math.min(1.6, W / 20));
   const Y = (y: number) => H - y;
-  const vbW = geo.width + MARGIN.l + MARGIN.r;
-  const vbH = H + MARGIN.t + MARGIN.b;
+  const M = mapMargins(problem.layout);
+  const band = outbyBand(geo);
+  const vbW = geo.width + M.l + M.r;
+  const vbH = H + M.t + M.b;
   const print = printMode !== null;
+  const numbering = props.numbering;
+  /** Pillar number size: smaller in the half pillars outby the FAB. */
+  const numSize = (cy: number) => Math.min(9, problem.layout.pillarWidth / 5, (cy < 0 ? band : problem.layout.pillarLength) / 3);
+  const pillarNums = useMemo(
+    () => (numbering && numbering.show && (printMode !== 'blank' || numbering.showOnBlankMap) ? pillarLabels(geo, numbering) : []),
+    [geo, numbering, printMode]
+  );
 
   const toFeet = (e: { clientX: number; clientY: number }) => {
     const svg = svgRef.current;
@@ -132,7 +154,18 @@ export function MapView(props: Props) {
     svgRef.current?.setPointerCapture(e.pointerId);
     setDrag({ id: el.id, dx: el.x - f.x, dy: el.y - f.y, x: el.x, y: el.y, moved: false });
   };
+  const roomDepthAt = (side: 'left' | 'right', x: number) => Math.max(0, Math.round((side === 'left' ? geo.colX[1] - x : x - geo.colX[2 * geo.E]) / 5) * 5);
+  const onRoomDown = (e: RPointerEvent, side: 'left' | 'right', row: number) => {
+    e.stopPropagation();
+    svgRef.current?.setPointerCapture(e.pointerId);
+    setRoomDrag({ side, row, depth: roomDepthAt(side, toFeet(e).x), moved: false });
+  };
   const onMoveP = (e: RPointerEvent) => {
+    if (roomDrag) {
+      const d = roomDepthAt(roomDrag.side, toFeet(e).x);
+      if (d !== roomDrag.depth) setRoomDrag({ ...roomDrag, depth: d, moved: true });
+      return;
+    }
     if (!drag) return;
     const f = toFeet(e);
     const el = problem.elements.find((x) => x.id === drag.id);
@@ -141,6 +174,11 @@ export function MapView(props: Props) {
     if (s && (Math.abs(s.x - drag.x) > 0.3 || Math.abs(s.y - drag.y) > 0.3)) setDrag({ ...drag, x: s.x, y: s.y, moved: true });
   };
   const onUp = () => {
+    if (roomDrag) {
+      props.onRoom?.(roomDrag.side, roomDrag.row, roomDrag.moved ? roomDrag.depth : null);
+      setRoomDrag(null);
+      return;
+    }
     if (drag?.moved) props.onMove?.(drag.id, drag.x, drag.y);
     else if (drag) props.onElementTap?.(drag.id);
     setDrag(null);
@@ -209,11 +247,14 @@ export function MapView(props: Props) {
     <svg
       ref={svgRef}
       className={`mine-map tool-${tool.type}`}
-      viewBox={`${-MARGIN.l} ${-MARGIN.t} ${vbW} ${vbH}`}
+      viewBox={`${-M.l} ${-M.t} ${vbW} ${vbH}`}
       style={widthStyle}
       onPointerMove={onMoveP}
       onPointerUp={onUp}
-      onPointerCancel={() => setDrag(null)}
+      onPointerCancel={() => {
+        setDrag(null);
+        setRoomDrag(null);
+      }}
       role="img"
       aria-label={`Mine map: ${problem.layout.entries} entries, ${problem.layout.rows - 1} crosscuts`}
     >
@@ -230,7 +271,7 @@ export function MapView(props: Props) {
           <path d="M0 0L10 5L0 10z" fill="#2563eb" />
         </marker>
       </defs>
-      <rect x={-MARGIN.l} y={-MARGIN.t} width={vbW} height={vbH} fill="#fff" onClick={onBgClick} />
+      <rect x={-M.l} y={-M.t} width={vbW} height={vbH} fill="#fff" onClick={onBgClick} />
       {/* Solid ground (screen only) */}
       {!print &&
         cells.map(({ cx, cy }) => {
@@ -238,6 +279,32 @@ export function MapView(props: Props) {
           const r = cellRect(geo, cx, cy);
           return <rect key={`s${cx},${cy}`} x={r.x} y={Y(r.y + r.h)} width={r.w} height={r.h} className="map-solid" onClick={onBgClick} />;
         })}
+      {/* Pillars outby the FAB, cut in half by the map edge (drawing only: outby the FAB is not part of the problem) */}
+      {band > 0 && (
+        <g pointerEvents="none">
+          {!print &&
+            Array.from({ length: geo.E - 1 }, (_, i) => {
+              const cx = 2 * i + 2;
+              return <rect key={`ob${cx}`} x={geo.colX[cx]} y={Y(0)} width={geo.colW[cx]} height={band} className="map-solid" />;
+            })}
+          <g stroke="#111" strokeWidth={0.7} strokeLinecap="square">
+            {Array.from({ length: geo.E - 1 }, (_, i) => {
+              const cx = 2 * i + 2;
+              const x0 = geo.colX[cx];
+              const x1 = x0 + geo.colW[cx];
+              const yb = Y(-band);
+              return <path key={`obl${cx}`} d={`M${x0} ${yb}V${Y(0)}H${x1}V${yb}`} fill="none" />;
+            })}
+            {/* Outer ribs of the outside entries run on outby. */}
+            <line x1={geo.colX[1]} y1={Y(0)} x2={geo.colX[1]} y2={Y(-band)} />
+            <line x1={geo.colX[2 * geo.E]} y1={Y(0)} x2={geo.colX[2 * geo.E]} y2={Y(-band)} />
+            {(['l', 'r'] as const).map((side) => {
+              const cx = side === 'l' ? 0 : 2 * geo.E;
+              return cellState(geo, cx, 0) === 'solid' ? null : <line key={side} x1={geo.colX[cx]} y1={Y(0)} x2={geo.colX[cx] + geo.colW[cx]} y2={Y(0)} />;
+            })}
+          </g>
+        </g>
+      )}
       {/* Openings: click target */}
       {cells.map(({ cx, cy }) => {
         const st = cellState(geo, cx, cy);
@@ -254,7 +321,7 @@ export function MapView(props: Props) {
             y={Y(r.y + r.h)}
             width={r.w}
             height={r.h}
-            className={`map-open${st === 'projected' ? ' projected' : ''}${layoutTool ? ' editable' : ''}${layoutTool && hoverCell === key ? ' hover' : ''}${layoutTool && st === 'solid' ? ' solid' : ''}`}
+            className={`map-open${st === 'projected' ? ' projected' : ''}${layoutTool ? ' editable' : ''}${layoutTool && (hoverCell === key || props.activeCell === key) ? ' hover' : ''}${layoutTool && st === 'solid' ? ' solid' : ''}`}
             onClick={(e) => {
               if (layoutTool) {
                 if (ty !== 'int') props.onCell?.(cx, cy);
@@ -263,7 +330,7 @@ export function MapView(props: Props) {
             onPointerEnter={layoutTool ? () => setHoverCell(key) : undefined}
             onPointerLeave={layoutTool ? () => setHoverCell(null) : undefined}
           >
-            {layoutTool && <title>{ty === 'int' ? 'Intersection (follows its openings)' : `${st} — click to change`}</title>}
+            {layoutTool && <title>{ty === 'int' ? 'Intersection (follows its openings)' : `${st === 'open' ? 'Mined' : st === 'projected' ? 'Projected' : 'Not mined'}: click to change`}</title>}
           </rect>
         );
       })}
@@ -292,26 +359,81 @@ export function MapView(props: Props) {
           <line key={i} x1={l.x1} y1={Y(l.y1)} x2={l.x2} y2={Y(l.y2)} strokeDasharray={l.dotted ? '2.2 1.6' : undefined} />
         ))}
       </g>
+      {/* Layout tool: a grab handle at each end of every crosscut pulls a side room out (or pushes it back in). */}
+      {!print && tool.type === 'layout' && props.onRoom &&
+        Array.from({ length: geo.R - 1 }, (_, j) => j + 1).flatMap((r) =>
+          (['left', 'right'] as const).map((side) => {
+            const cx = side === 'left' ? 0 : 2 * geo.E;
+            const rib = side === 'left' ? geo.colX[1] : geo.colX[2 * geo.E];
+            const s = side === 'left' ? -1 : 1;
+            const open = cellState(geo, cx, 2 * r) !== 'solid';
+            const dragging = roomDrag && roomDrag.side === side && roomDrag.row === r ? roomDrag : null;
+            const depth = dragging ? dragging.depth : open ? geo.colW[cx] : 0;
+            const yc = geo.rowY[2 * r] + W / 2;
+            const hx = rib + s * depth;
+            return (
+              <g key={`rh${side}${r}`} className={`room-handle${dragging ? ' dragging' : ''}`} data-room={`${side}${r}`}>
+                {dragging && dragging.moved && (
+                  <rect
+                    x={Math.min(rib, hx)}
+                    y={Y(geo.rowY[2 * r] + W)}
+                    width={Math.abs(hx - rib)}
+                    height={W}
+                    className={`room-preview${depth < MIN_ROOM ? ' closing' : ''}`}
+                    pointerEvents="none"
+                  />
+                )}
+                <rect
+                  x={hx - (s < 0 ? 4.5 : 0)}
+                  y={Y(yc) - W / 2}
+                  width={4.5}
+                  height={W}
+                  rx={1.2}
+                  className="room-grip"
+                  style={{ touchAction: 'none' }}
+                  onPointerDown={(e) => onRoomDown(e, side, r)}
+                >
+                  <title>{open ? 'Drag to make this side room deeper or shallower; drag back to the entry to close it; tap to close' : 'Drag out to pull a side room out of this crosscut; tap for a room'}</title>
+                </rect>
+                {dragging && dragging.moved && (
+                  <text x={hx + s * 6} y={Y(yc) + 1.5} fontSize={4} textAnchor={s < 0 ? 'end' : 'start'} className="room-depth" pointerEvents="none">
+                    {depth < MIN_ROOM ? 'close' : `${depth} ft`}
+                  </text>
+                )}
+              </g>
+            );
+          })
+        )}
+      {/* Pillar numbers */}
+      {pillarNums.length > 0 && (
+        <g className="map-pillar-nums" fontFamily="Arial, sans-serif" textAnchor="middle" pointerEvents="none">
+          {pillarNums.map((p) => (
+            <text key={`pn${p.cx},${p.cy}`} x={p.x} y={Y(p.y) + numSize(p.cy) * 0.35} fontSize={numSize(p.cy)} fill={print ? '#333' : '#8a7a5c'} fontWeight={700} data-pillar={p.label}>
+              {p.label}
+            </text>
+          ))}
+        </g>
+      )}
       {/* Labels (not on a blank contest map: maps are not labeled, General Information rule 7) */}
       {printMode !== 'blank' && (
         <g className="map-axis" fontFamily="Arial, sans-serif" fill="#333" pointerEvents="none">
           {Array.from({ length: geo.E }, (_, i) => (
-            <text key={`en${i}`} x={geo.colX[2 * i + 1] + W / 2} y={H + 8} fontSize={4} textAnchor="middle">
+            <text key={`en${i}`} x={geo.colX[2 * i + 1] + W / 2} y={H + band + 8} fontSize={4} textAnchor="middle">
               {entryName(problem.layout, i).replace(/\s*Entry$/i, '')}
             </text>
           ))}
-          <text x={geo.width / 2} y={H + 18} fontSize={5} textAnchor="middle" fontWeight={700}>
+          <text x={-M.l + 3} y={Y(W / 2) + 1.8} fontSize={5} fontWeight={700}>
             FAB
           </text>
           {Array.from({ length: geo.R - 1 }, (_, j) => {
             const r = j + 1;
             return (
-              <text key={`xc${r}`} x={-MARGIN.l + 3} y={Y(geo.rowY[2 * r] + W / 2) + 1.5} fontSize={4}>
+              <text key={`xc${r}`} x={-M.l + 3} y={Y(geo.rowY[2 * r] + W / 2) + 1.5} fontSize={4}>
                 XC {problem.layout.xcStart + r}
               </text>
             );
           })}
-          <text x={-MARGIN.l + 3} y={-MARGIN.t + 6} fontSize={3.4} fill="#666">
+          <text x={-M.l + 3} y={-M.t + 6} fontSize={3.4} fill="#666">
             1 in = 10 ft · pillars {problem.layout.pillarWidth}×{problem.layout.pillarLength} ft
           </text>
         </g>

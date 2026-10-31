@@ -3,7 +3,7 @@
  * the quick choices from the inspector (direction, airtight, open, density, …) plus duplicate, delete and done.
  */
 import { elementName } from '../catalog';
-import type { El } from '../model';
+import type { El, SegState } from '../model';
 
 export type RadialAction = 'edit' | 'duplicate' | 'delete' | 'done';
 
@@ -118,6 +118,55 @@ export function RadialMenu({ el, x, y, width, height, onPatch, onAction }: Props
             aria-checked={o.on}
             data-opt={o.id}
             onClick={() => (o.patch ? onPatch(o.patch) : o.action && onAction(o.action))}
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------ layout: one opening
+
+export type OpeningPick = SegState | 'done';
+
+/** Choices for an opening in the layout tool: how it is drawn on the map (Miscellaneous rule 3 for side stubs). */
+export function openingOptions(state: SegState): { id: OpeningPick; label: string; title: string; on?: boolean }[] {
+  return [
+    { id: 'open', label: 'Mined', title: 'Mined: solid lines (actual, accurately measured workings)', on: state === 'open' },
+    { id: 'projected', label: 'Projected', title: 'Projected: dotted lines (may or may not be accurate)', on: state === 'projected' },
+    { id: 'solid', label: 'Not mined', title: 'Not mined: solid coal', on: state === 'solid' },
+    { id: 'done', label: '✓', title: 'Done' }
+  ];
+}
+
+export function OpeningRing({ name, state, x, y, width, height, onPick }: { name: string; state: SegState; x: number; y: number; width: number; height: number; onPick: (p: OpeningPick) => void }) {
+  const opts = openingOptions(state);
+  const r = 74;
+  const pad = r + 40;
+  const cx = Math.min(Math.max(x, pad), Math.max(pad, width - pad));
+  const cy = Math.min(Math.max(y, pad), Math.max(pad, height - pad));
+  return (
+    <div className="radial" style={{ left: cx, top: cy }} role="menu" aria-label={`${name}: layout`} onPointerDown={(e) => e.stopPropagation()}>
+      <svg className="radial-ring" width={2 * r} height={2 * r} style={{ left: -r, top: -r }} aria-hidden="true">
+        <circle cx={r} cy={r} r={r - 1} />
+      </svg>
+      <span className="radial-name">{name}</span>
+      {opts.map((o, i) => {
+        const a = -Math.PI / 2 + (2 * Math.PI * i) / opts.length;
+        return (
+          <button
+            key={o.id}
+            type="button"
+            role={o.on === undefined ? 'menuitem' : 'menuitemradio'}
+            className={`radial-btn${o.on ? ' on' : ''}${o.id === 'done' ? ' done' : ''}`}
+            style={{ left: Math.cos(a) * r, top: Math.sin(a) * r }}
+            title={o.title}
+            aria-label={o.title}
+            aria-checked={o.on}
+            data-opt={o.id}
+            onClick={() => onPick(o.id)}
           >
             {o.label}
           </button>

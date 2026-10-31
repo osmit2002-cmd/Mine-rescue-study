@@ -1,13 +1,36 @@
-import { useState, type ReactNode } from 'react';
+import { useState, type FocusEvent, type MouseEvent, type ReactNode } from 'react';
 import { elementName, GROUPS, KIND_DEFS, LEGEND_NOTE, PALETTE, placardText, X_DEFS, xDef, makeElement, type PaletteItem } from '../catalog';
 import { locName, locate, type Topo } from '../geometry';
-import { entryName, LIMITS, type El, type Layout, type Problem, type XSub } from '../model';
+import { entryName, LIMITS, sideDepth, type El, type Layout, type Problem, type XSub } from '../model';
+import type { NumberDirection, NumberOrder, PillarNumbering } from '../pillars';
 import { classifyGas, gasReasons } from '../rules';
 import type { Check } from '../solve';
 import { RuleRefs } from './RuleRefs';
 import { SymbolIcon } from './symbols';
 
 // ------------------------------------------------------------ small inputs
+
+/**
+ * Select the whole value when a field gets focus (click, tap or Tab), so typing replaces it. The mouseup that
+ * follows a focusing click would otherwise drop the selection in Chrome and Safari.
+ */
+export const selectOnFocus = {
+  onFocus: (e: FocusEvent<HTMLInputElement>) => {
+    const t = e.currentTarget;
+    t.select();
+    t.dataset.justFocused = '1';
+  },
+  onMouseUp: (e: MouseEvent<HTMLInputElement>) => {
+    const t = e.currentTarget;
+    if (t.dataset.justFocused) {
+      e.preventDefault();
+      delete t.dataset.justFocused;
+    }
+  },
+  onBlur: (e: FocusEvent<HTMLInputElement>) => {
+    delete e.currentTarget.dataset.justFocused;
+  }
+};
 
 function Num({ label, value, onChange, min, max, step = 1, suffix }: { label: string; value: number | undefined; onChange: (v: number | undefined) => void; min?: number; max?: number; step?: number; suffix?: string }) {
   return (
@@ -25,8 +48,52 @@ function Num({ label, value, onChange, min, max, step = 1, suffix }: { label: st
             const v = e.target.value === '' ? undefined : Number(e.target.value);
             onChange(v === undefined || Number.isNaN(v) ? undefined : v);
           }}
+          {...selectOnFocus}
         />
         {suffix && <span className="muted small">{suffix}</span>}
+      </span>
+    </label>
+  );
+}
+
+/** A count that changes the map (entries, crosscuts): applied when the field is left or Enter is pressed, so typing "12" never passes through "1". */
+function CountNum({ label, value, min, max, onCommit }: { label: string; value: number; min: number; max: number; onCommit: (v: number) => void }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => {
+    if (draft === null) return;
+    const v = Number(draft);
+    setDraft(null);
+    if (draft !== '' && Number.isFinite(v)) {
+      const c = Math.min(max, Math.max(min, Math.round(v)));
+      if (c !== value) onCommit(c);
+    }
+  };
+  return (
+    <label className="field num">
+      <span>{label}</span>
+      <span className="num-wrap">
+        <input
+          type="number"
+          inputMode="numeric"
+          value={draft ?? value}
+          min={min}
+          max={max}
+          {...selectOnFocus}
+          onChange={(e) => {
+            // Spinner arrows and arrow keys (no typed input) apply at once; typing waits for Enter or leaving the field.
+            const v = Number(e.target.value);
+            const typed = /^(insert|delete)/.test((e.nativeEvent as InputEvent).inputType ?? '');
+            if (!typed && e.target.value !== '' && Number.isFinite(v) && v >= min && v <= max) {
+              setDraft(null);
+              onCommit(v);
+            } else setDraft(e.target.value);
+          }}
+          onBlur={(e) => {
+            selectOnFocus.onBlur(e);
+            commit();
+          }}
+          onKeyDown={(e) => e.key === 'Enter' && commit()}
+        />
       </span>
     </label>
   );
@@ -247,9 +314,23 @@ export function Inspector({ el, topo, onChange, onDelete, onDuplicate, onClose }
 
 // ------------------------------------------------------------ problem + layout
 
-export function ProblemPanel({ p, onChange, onLayout, layoutTool, onLayoutTool }: { p: Problem; onChange: (patch: Partial<Problem>) => void; onLayout: (l: Layout) => void; layoutTool: boolean; onLayoutTool: (on: boolean) => void }) {
+export function ProblemPanel({
+  p,
+  onChange,
+  onLayout,
+  layoutTool,
+  onLayoutTool,
+  numberingPanel
+}: {
+  p: Problem;
+  onChange: (patch: Partial<Problem>) => void;
+  onLayout: (patch: Partial<Layout>) => void;
+  layoutTool: boolean;
+  onLayoutTool: (on: boolean) => void;
+  numberingPanel?: ReactNode;
+}) {
   const l = p.layout;
-  const setL = (patch: Partial<Layout>) => onLayout({ ...l, ...patch });
+  const setL = onLayout;
   return (
     <div className="problem-panel">
       <Section title="Problem">
@@ -278,8 +359,8 @@ export function ProblemPanel({ p, onChange, onLayout, layoutTool, onLayoutTool }
       <Section title="Blank map">
         <p className="small muted">All pillar blocks are equal size (General Information rule 7). Contest maps are 1 in = 10 ft.</p>
         <div className="row2">
-          <Num label="Entries" value={l.entries} min={LIMITS.entries[0]} max={LIMITS.entries[1]} onChange={(v) => v && setL({ entries: Math.max(1, Math.min(12, Math.round(v))) })} />
-          <Num label="Crosscuts inby the FAB" value={l.rows - 1} min={1} max={LIMITS.rows[1] - 1} onChange={(v) => v && setL({ rows: Math.max(2, Math.min(24, Math.round(v) + 1)) })} />
+          <CountNum label="Entries" value={l.entries} min={LIMITS.entries[0]} max={LIMITS.entries[1]} onCommit={(v) => setL({ entries: v })} />
+          <CountNum label="Crosscuts inby the FAB" value={l.rows - 1} min={1} max={LIMITS.rows[1] - 1} onCommit={(v) => setL({ rows: v + 1 })} />
         </div>
         <div className="row2">
           <Num label="Pillar width" suffix="ft" value={l.pillarWidth} min={20} max={200} onChange={(v) => v && setL({ pillarWidth: Math.round(v) })} />
@@ -299,6 +380,7 @@ export function ProblemPanel({ p, onChange, onLayout, layoutTool, onLayoutTool }
                 aria-label={`Entry ${i + 1} name`}
                 value={l.entryNames[i] ?? ''}
                 placeholder={entryName({ ...l, entryNames: [] }, i)}
+                {...selectOnFocus}
                 onChange={(e) => {
                   const names = Array.from({ length: l.entries }, (_, j) => l.entryNames[j] ?? '');
                   names[i] = e.target.value;
@@ -308,17 +390,179 @@ export function ProblemPanel({ p, onChange, onLayout, layoutTool, onLayoutTool }
             ))}
           </div>
         </div>
+        <Check label="Pillars outby the FAB" hint="drawn below the FAB row; numbered 0, 00 by default" checked={l.outbyPillars} onChange={(v) => setL({ outbyPillars: v })} />
         <button type="button" className={layoutTool ? 'primary' : ''} onClick={() => onLayoutTool(!layoutTool)} aria-pressed={layoutTool}>
-          {layoutTool ? 'Done editing openings' : 'Edit openings…'}
+          {layoutTool ? 'Done editing the layout' : 'Edit layout on the map…'}
         </button>
         {layoutTool && (
           <p className="small note">
-            Click an entry, crosscut or stub to cycle: <strong>mined</strong> (solid lines: actual, accurately measured workings) → <strong>projected</strong> (dotted lines: may or may not be accurate) →{' '}
+            Click an entry, crosscut or stub to set it <strong>mined</strong> (solid lines: actual, accurately measured workings), <strong>projected</strong> (dotted lines: may or may not be accurate) or{' '}
             <strong>not mined</strong>. Side stubs off the outer entries start unmined (Miscellaneous rule 3).
           </p>
         )}
       </Section>
+      {numberingPanel}
     </div>
+  );
+}
+
+// ------------------------------------------------------------ layout bar (above the map in the layout tool)
+
+export type LayoutBarOp = { type: 'add-entry' | 'remove-entry'; side: 'left' | 'right' } | { type: 'add-row' | 'remove-row' } | { type: 'set'; patch: Partial<Layout> } | { type: 'done' };
+
+export function LayoutBar({ l, onOp }: { l: Layout; onOp: (op: LayoutBarOp) => void }) {
+  const size = (label: string, key: 'pillarWidth' | 'pillarLength' | 'entryWidth' | 'stubLength', [lo, hi]: readonly [number, number]) => (
+    <label className="inline">
+      <span>{label}</span>
+      <input
+        type="number"
+        inputMode="numeric"
+        min={lo}
+        max={hi}
+        value={l[key]}
+        aria-label={`${label} (ft)`}
+        {...selectOnFocus}
+        onChange={(e) => {
+          const v = Number(e.target.value);
+          if (e.target.value !== '' && Number.isFinite(v) && v >= 1) onOp({ type: 'set', patch: { [key]: Math.round(v) } });
+        }}
+      />
+    </label>
+  );
+  return (
+    <div className="layout-bar" role="toolbar" aria-label="Mine layout">
+      <span className="grp">
+        <span>Entries {l.entries}</span>
+        <button type="button" onClick={() => onOp({ type: 'add-entry', side: 'left' })} disabled={l.entries >= LIMITS.entries[1]} title="Add an entry on the left">
+          ＋ Left
+        </button>
+        <button type="button" onClick={() => onOp({ type: 'remove-entry', side: 'left' })} disabled={l.entries <= LIMITS.entries[0]} title="Remove the left entry">
+          − Left
+        </button>
+        <button type="button" onClick={() => onOp({ type: 'remove-entry', side: 'right' })} disabled={l.entries <= LIMITS.entries[0]} title="Remove the right entry">
+          − Right
+        </button>
+        <button type="button" onClick={() => onOp({ type: 'add-entry', side: 'right' })} disabled={l.entries >= LIMITS.entries[1]} title="Add an entry on the right">
+          ＋ Right
+        </button>
+      </span>
+      <span className="grp">
+        <span>Crosscuts {l.rows - 1}</span>
+        <button type="button" onClick={() => onOp({ type: 'remove-row' })} disabled={l.rows <= LIMITS.rows[0]} title="Remove the last crosscut (the face moves outby)">
+          − Shorter
+        </button>
+        <button type="button" onClick={() => onOp({ type: 'add-row' })} disabled={l.rows >= LIMITS.rows[1]} title="Add a crosscut at the face (the face moves inby)">
+          ＋ Longer
+        </button>
+      </span>
+      <span className="grp">
+        <span>Feet</span>
+        {size('Pillar W', 'pillarWidth', LIMITS.pillar)}
+        {size('Pillar L', 'pillarLength', LIMITS.pillar)}
+        {size('Entry', 'entryWidth', LIMITS.entryWidth)}
+        {size('Face stub', 'stubLength', LIMITS.stub)}
+      </span>
+      <span className="grp">
+        <span>Side rooms</span>
+        {(['left', 'right'] as const).map((side) => {
+          const d = sideDepth(l, side);
+          const key = side === 'left' ? 'sideLeft' : 'sideRight';
+          return (
+            <span key={side} className="inline">
+              <label className="inline">
+                <input type="checkbox" checked={d > 0} onChange={(e) => onOp({ type: 'set', patch: { [key]: e.target.checked ? l.stubLength : 0 } })} />
+                <span>{side === 'left' ? 'Left' : 'Right'}</span>
+              </label>
+              {d > 0 && (
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min={10}
+                  max={LIMITS.side[1]}
+                  value={d}
+                  aria-label={`${side === 'left' ? 'Left' : 'Right'} side room depth (ft)`}
+                  {...selectOnFocus}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    if (e.target.value !== '' && Number.isFinite(v) && v >= 1) onOp({ type: 'set', patch: { [key]: Math.round(v) } });
+                  }}
+                />
+              )}
+            </span>
+          );
+        })}
+      </span>
+      <label className="inline">
+        <input type="checkbox" checked={l.outbyPillars} onChange={(e) => onOp({ type: 'set', patch: { outbyPillars: e.target.checked } })} />
+        <span>Pillars outby the FAB</span>
+      </label>
+      <button type="button" className="primary" onClick={() => onOp({ type: 'done' })}>
+        Done
+      </button>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------ pillar numbering
+
+export function NumberingPanel({ n, isDefault, onChange, onReset, onImport, onExport }: { n: PillarNumbering; isDefault: boolean; onChange: (n: PillarNumbering) => void; onReset: () => void; onImport: () => void; onExport: () => void }) {
+  const inby = (patch: Partial<PillarNumbering['inby']>) => onChange({ ...n, inby: { ...n.inby, ...patch } });
+  // The outby labels are typed as text ("0, 00"): keep what is typed until the field is left.
+  const [outbyDraft, setOutbyDraft] = useState<string | null>(null);
+  return (
+    <Section title="Pillar numbers" open={false}>
+      <p className="small muted">
+        {isDefault ? 'Using the default scheme from pillar-numbering.json' : 'Using this device’s scheme'}: {n.name}.
+      </p>
+      <Check label="Show pillar numbers on the map" checked={n.show} onChange={(v) => onChange({ ...n, show: v })} />
+      <label className="field text">
+        <span>Outby the FAB, left to right (comma separated)</span>
+        <input
+          value={outbyDraft ?? n.outby.labels.join(', ')}
+          placeholder="0, 00"
+          onChange={(e) => {
+            setOutbyDraft(e.target.value);
+            onChange({ ...n, outby: { ...n.outby, labels: e.target.value.split(',').map((x) => x.trim()).filter(Boolean) } });
+          }}
+          onBlur={() => setOutbyDraft(null)}
+        />
+      </label>
+      <Check label="More outby pillars than labels: add a zero" hint="0, 00, 000…" checked={n.outby.more === 'add-zero'} onChange={(v) => onChange({ ...n, outby: { ...n.outby, more: v ? 'add-zero' : 'none' } })} />
+      <div className="numbering-grid">
+        <Num label="Inby starts at" value={n.inby.start} onChange={(v) => inby({ start: Math.round(v ?? 1) })} />
+        <Num label="Count by" value={n.inby.step} min={1} onChange={(v) => inby({ step: Math.max(1, Math.round(v ?? 1)) })} />
+        <label className="field">
+          <span>Order</span>
+          <select value={n.inby.order} onChange={(e) => inby({ order: e.target.value as NumberOrder })}>
+            <option value="rows">Across each row, then inby</option>
+            <option value="columns">Up each column to the face</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Direction</span>
+          <select value={n.inby.direction} onChange={(e) => inby({ direction: e.target.value as NumberDirection })}>
+            <option value="left-to-right">Left to right</option>
+            <option value="right-to-left">Right to left</option>
+            <option value="serpentine">Back and forth</option>
+          </select>
+        </label>
+        <Text label="Prefix" value={n.inby.prefix} onChange={(v) => inby({ prefix: v })} />
+        <Text label="Suffix" value={n.inby.suffix} onChange={(v) => inby({ suffix: v })} />
+      </div>
+      <Check label="Number the blocks at the face" hint="between the entries inby the last crosscut" checked={n.faceBlocks} onChange={(v) => onChange({ ...n, faceBlocks: v })} />
+      <Check label="Print numbers on the blank team map" hint="maps are normally unlabelled" checked={n.showOnBlankMap} onChange={(v) => onChange({ ...n, showOnBlankMap: v })} />
+      <div className="row-actions">
+        <button type="button" onClick={onImport}>
+          Import scheme
+        </button>
+        <button type="button" onClick={onExport}>
+          Export scheme
+        </button>
+        <button type="button" onClick={onReset} disabled={isDefault}>
+          Use default
+        </button>
+      </div>
+    </Section>
   );
 }
 

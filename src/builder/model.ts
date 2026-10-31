@@ -20,14 +20,26 @@ export interface Layout {
   /** Pillar size across the entries (x) and along them (y), in feet. All pillar blocks are equal size (General Information rule 7). */
   pillarWidth: number;
   pillarLength: number;
-  /** Depth of the inby stubs (entries past the last crosscut) and of the side stubs, in feet. */
+  /** Depth of the inby stubs (entries past the last crosscut), in feet; also of the side rooms unless sideLeft / sideRight say otherwise. */
   stubLength: number;
+  /**
+   * Depth of the side rooms (side stubs off the outer entries) on the left and right, in feet. 0 = no side rooms on
+   * that side. Unset = stubLength (problems saved before these existed).
+   */
+  sideLeft?: number;
+  sideRight?: number;
   /** Cell state overrides, keyed "cx,cy". Unlisted cells use defaultCellState. */
   cells: Record<string, SegState>;
   /** Entry names, left to right. Blank entries are named "No. N Entry". */
   entryNames: string[];
   /** Number printed for crosscut row 0 (the FAB row). Row r is crosscut xcStart + r. */
   xcStart: number;
+  /**
+   * Draw the row of pillars just outby the FAB (between the entries, below row 0). Drawing only: the team does
+   * not explore outby the FAB, so these pillars are not part of the openings graph. They carry the first pillar
+   * numbers (0, 00 in the default scheme, see pillars.ts).
+   */
+  outbyPillars: boolean;
 }
 
 /** One placard, object or condition on the map. Optional fields apply only to some kinds (see catalog.ts). */
@@ -126,14 +138,17 @@ export interface Problem {
 
 export const SCHEMA = 'mrs-problem/1';
 
-export const LIMITS = { entries: [1, 12], rows: [2, 24], entryWidth: [10, 40], pillar: [20, 200], stub: [10, 200] } as const;
+export const LIMITS = { entries: [1, 12], rows: [2, 24], entryWidth: [10, 40], pillar: [20, 200], stub: [10, 200], side: [0, 200] } as const;
+
+/** Depth of the side rooms on one side, in feet (0 = none). */
+export const sideDepth = (l: Layout, side: 'left' | 'right') => (side === 'left' ? l.sideLeft : l.sideRight) ?? l.stubLength;
 
 export function newId(prefix = 'e'): string {
   return `${prefix}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
 }
 
 export function defaultLayout(entries = 3, rows = 6): Layout {
-  return { entries, rows, entryWidth: 20, pillarWidth: 60, pillarLength: 60, stubLength: 40, cells: {}, entryNames: [], xcStart: 0 };
+  return { entries, rows, entryWidth: 20, pillarWidth: 60, pillarLength: 60, stubLength: 40, cells: {}, entryNames: [], xcStart: 0, outbyPillars: true };
 }
 
 export function blankProblem(title = 'New problem'): Problem {
@@ -224,9 +239,12 @@ export function normalizeProblem(raw: unknown): Problem {
     pillarWidth: clamp(lr.pillarWidth, LIMITS.pillar, d.pillarWidth),
     pillarLength: clamp(lr.pillarLength, LIMITS.pillar, d.pillarLength),
     stubLength: clamp(lr.stubLength, LIMITS.stub, d.stubLength),
+    ...(num(lr.sideLeft) !== undefined ? { sideLeft: clamp(lr.sideLeft, LIMITS.side, 0) } : {}),
+    ...(num(lr.sideRight) !== undefined ? { sideRight: clamp(lr.sideRight, LIMITS.side, 0) } : {}),
     cells,
     entryNames: Array.isArray(lr.entryNames) ? lr.entryNames.map((n) => (typeof n === 'string' ? n.slice(0, 40) : '')) : [],
-    xcStart: clamp(lr.xcStart, [0, 999], 0)
+    xcStart: clamp(lr.xcStart, [0, 999], 0),
+    outbyPillars: bool(lr.outbyPillars) ?? true
   };
   const fm = (r.fabMaterials && typeof r.fabMaterials === 'object' ? r.fabMaterials : {}) as Record<string, unknown>;
   const els = Array.isArray(r.elements) ? r.elements.map(normalizeElement).filter((e): e is El => !!e) : [];

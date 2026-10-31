@@ -1,7 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (unreleased)
 
+- Version 0.5.0, so a running build of the layout editing and pillar numbering changes shows v0.5.0 in the footer and on About.
+
+- **Edit the mine layout on the map** (Builder → **Edit layout**): a layout bar adds or removes entries on the left or right, makes the problem longer or shorter at the face, and changes pillar, entry and face stub sizes; clicking an entry, crosscut or stub opens a ring to set it mined, projected or not mined. Placed symbols and opening settings stay in their openings when the grid changes, and the builder asks before removing an entry or crosscut that has symbols in it. Typing a new entry or crosscut count in the panel applies when you leave the field.
+- **Side rooms:** in Edit layout every crosscut has a grab handle at each end; drag it outward to pull a side room out (all rooms on one side share a depth, shown while dragging) or back to the entry to close it, and tap it to open or close a room. **Side rooms Left / Right** in the layout bar take a whole side off (the map ends at the outer entry) or put it back, with its depth. Layout gains `sideLeft` / `sideRight`; older problems keep using the stub depth.
+- **Pillar numbering** from an editable file, `src/builder/pillar-numbering.json`. Default: the two pillars outby the FAB are 0 and 00 (left to right), then 1, 2, …, N left to right across each row moving inby to the face. Other schemes (columns, right to left, back and forth, prefixes, other outby labels) can be set in the file or per device in **Blank map → Pillar numbers**, with import and export. Maps now draw the row of pillars outby the FAB, cut in half by the map edge, with the FAB crosscut just inby them and labelled beside it (Layout `outbyPillars`, on by default).
+- Number fields (gas readings, sizes, counts) select their whole value when clicked or tabbed into, so typing replaces it.
 - **Reference cases for the solver** (`src/builder/cases/`): past contest problems from `problems/` transcribed into builder problems, each with its judge book's key as a typed `JudgeKey` (accepted team-stop numbers per intersection, patients to rescue and by which stop, objects to find, withdrawal, and the key points not yet checkable, verbatim).
   - `compareToKey()` (`src/builder/judge.ts`) checks a solution against the key and reports each check with what the judges expect and what the solver did. The tests pin the checks that still fail, so progress shows up as a smaller list.
   - First case: 2016 Post 5 & WV State, Day 1 (MSHA archive). The solver now matches 14 of its 18 checks; the remaining four are the order of the last three team stops and the rescue that depends on it. The case is also in the builder's samples.

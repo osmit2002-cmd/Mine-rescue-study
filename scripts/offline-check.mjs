@@ -87,10 +87,10 @@ await page.waitForSelector('[role=radiogroup][aria-label="Question source"]');
 ok((await page.getAttribute('[role=radiogroup][aria-label="Question source"] [role=radio] >> nth=0', 'aria-checked')) === 'true', 'bench practice defaults to Statements (parts practice still offered)');
 
 // Version in the footer and on About.
-ok((await page.textContent('[data-testid=footer-version]')).trim() === 'v0.4.0', 'footer shows v0.4.0');
+ok((await page.textContent('[data-testid=footer-version]')).trim() === 'v0.5.0', 'footer shows v0.5.0');
 await page.goto(url + '#/about');
 await page.waitForSelector('[data-testid=app-version]');
-ok((await page.textContent('main')).includes('v0.4.0'), 'About shows v0.4.0');
+ok((await page.textContent('main')).includes('v0.5.0'), 'About shows v0.5.0');
 
 // Mine rescue: mock timed at 15 min by default (rule 3, p. 7); the toggle and a custom length are remembered.
 await page.goto(url + '#/');
